@@ -114,7 +114,7 @@ scripts/make-icon.sh
 ls Icon/AppIcon.iconset
 ```
 
-Expected: ten PNGs (`icon_16x16.png` … `icon_512x512@2x.png`), `Icon/AppIcon.icns` and a 1024×1024 `Icon/preview.png`. `build.sh` regenerates the icon automatically when `Icon/AppIcon.icns` is missing or older than `scripts/make-icon.swift`.
+Expected: ten PNGs (`icon_16x16.png` … `icon_512x512@2x.png`), `Icon/AppIcon.icns` and a 1024×1024 `Icon/preview.png`. `build.sh` regenerates the icon automatically when `Icon/AppIcon.icns` is missing or older than `Resources/AppIcon-source.png`.
 
 ## UI launch hooks (v0.2)
 

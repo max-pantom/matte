@@ -17,9 +17,9 @@ else
   BIN="$(swift build -c release --product Matte $SWIFT_FLAGS --show-bin-path)/Matte"
 fi
 
-# Regenerate the icon when it is missing or older than its generator.
-if [ ! -f Icon/AppIcon.icns ] || [ scripts/make-icon.swift -nt Icon/AppIcon.icns ]; then
-  (swift scripts/make-icon.swift && iconutil -c icns Icon/AppIcon.iconset -o Icon/AppIcon.icns) || echo "Icon generation failed; keeping the existing icon."
+# Rebuild the icon from Resources/AppIcon-source.png when it is missing or older than the source.
+if [ ! -f Icon/AppIcon.icns ] || [ Resources/AppIcon-source.png -nt Icon/AppIcon.icns ] || [ scripts/make-icon.sh -nt Icon/AppIcon.icns ]; then
+  sh scripts/make-icon.sh || echo "Icon generation failed; keeping the existing icon."
 fi
 
 APP="$PWD/Matte.app"
