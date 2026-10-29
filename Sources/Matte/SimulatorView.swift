@@ -28,10 +28,9 @@ struct SimulatorView: View {
 
     var body: some View {
         let images = model.selectedImagesInSelectionOrder
-        let context = SimContext(useExport: model.simSource == .export, format: activeFormat, options: model.renderOptions)
+        let context = SimContext(useExport: model.simSource == .export, format: activeFormat, options: model.renderOptions(for: activeFormat))
         VStack(spacing: 0) {
             controls
-            Rectangle().fill(Theme.line).frame(height: 0.5)
             if images.isEmpty {
                 emptyState
             } else {
@@ -51,59 +50,35 @@ struct SimulatorView: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                SegmentedControl(selection: $model.simKind, options: [(SimKind.xPost, "X post"), (SimKind.igCarousel, "IG carousel"), (SimKind.igGrid, "IG grid")])
-                    .fixedSize()
-                Spacer(minLength: 8)
-                SegmentedControl(selection: $model.simSource, options: [(SimSource.original, "Original"), (SimSource.export, "Matte export")])
-                    .fixedSize()
-            }
+        HStack(spacing: 12) {
+            Picker("Simulation", selection: $model.simKind) { Text("X post").tag(SimKind.xPost); Text("IG carousel").tag(SimKind.igCarousel); Text("IG grid").tag(SimKind.igGrid) }.pickerStyle(.segmented).labelsHidden().fixedSize()
+            Spacer(minLength: 8)
             if model.simSource == .export {
-                HStack(spacing: 8) {
-                    Text("Rendered as").font(Theme.font(12)).foregroundStyle(Theme.fg3)
-                    Menu {
-                        ForEach(model.simKind == .xPost ? xFormats : igFormats) { format in
-                            Button("\(format.name) · \(format.width)×\(format.height)") {
-                                if format.platform == .x { model.simXFormatID = format.id } else { model.simIGFormatID = format.id }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(activeFormat.name).font(Theme.font(12, .medium))
-                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
-                        }
-                        .foregroundStyle(Theme.fg1)
-                    }
-                    .menuStyle(.button)
-                    .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .padding(.horizontal, 8)
-                    .frame(height: 24)
-                    .background(Theme.component, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .hairline(6)
-                    Text("with your current frame settings").font(Theme.font(12)).foregroundStyle(Theme.fg3).lineLimit(1)
-                }
-                .transition(.opacity)
+                Picker("Rendered as", selection: formatBinding) {
+                    ForEach(model.simKind == .xPost ? xFormats : igFormats) { format in Text(format.name).tag(format.id) }
+                }.pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize().help("Format used for the Matte export, with your current frame settings")
             }
+            Picker("Source", selection: $model.simSource) { Text("Original").tag(SimSource.original); Text("Matte export").tag(SimSource.export) }.pickerStyle(.segmented).labelsHidden().fixedSize()
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
-        .animation(Theme.motion, value: model.simSource)
+    }
+
+    private var formatBinding: Binding<String> {
+        Binding(get: { activeFormat.id }, set: { id in
+            if model.simKind == .xPost { model.simXFormatID = id } else { model.simIGFormatID = id }
+        })
     }
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-            Image(systemName: "rectangle.on.rectangle.angled").font(.system(size: 34, weight: .light)).foregroundStyle(Theme.fg3)
-            Text(model.images.isEmpty ? "Add images, then select the ones you want to post" : "Select images in the sidebar to simulate a post")
-                .font(Theme.font(15, .medium)).foregroundStyle(Theme.fg1)
-            Text("They appear in the order you select them, just like attaching them to a post.")
-                .font(Theme.font(12)).foregroundStyle(Theme.fg3)
+            Image(systemName: "rectangle.on.rectangle.angled").font(.system(size: 36)).foregroundStyle(Theme.tertiary)
+            Text(model.images.isEmpty ? "Add images, then select the ones you want to post" : "Select images in the sidebar to simulate a post").foregroundStyle(Theme.secondary)
+            Text("They appear in the order you select them.").font(.system(size: 11)).foregroundStyle(Theme.tertiary)
             if model.images.isEmpty {
-                Button("Choose images…") { model.chooseImages() }.buttonStyle(MatteButtonStyle(kind: .primary))
+                Button("Choose images…") { model.chooseImages() }.buttonStyle(PrimaryButtonStyle())
             } else {
-                Button("Select all images") { model.selectAllImages() }.buttonStyle(MatteButtonStyle(kind: .secondary))
+                Button("Select all images") { model.selectAllImages() }.buttonStyle(SecondaryButtonStyle())
             }
         }
         .multilineTextAlignment(.center)
@@ -139,8 +114,8 @@ struct SimTile: View {
             CropBadge(loss: loss).padding(8)
         }
         .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .hairline(cornerRadius)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(Theme.line, lineWidth: 0.5))
         .help("\(image.name): shown at \(String(format: "%.3f", displayRatio)):1")
     }
 }
@@ -151,10 +126,10 @@ struct CropBadge: View {
     var body: some View {
         let percent = Int((loss * 100).rounded())
         HStack(spacing: 4) {
-            Circle().fill(percent == 0 ? Theme.positive : Theme.warning).frame(width: 6, height: 6)
+            Circle().fill(percent == 0 ? Tone.positive.dot : Tone.warning.dot).frame(width: 6, height: 6)
             Text(percent == 0 ? "full" : "cropped \(percent)%")
         }
-        .font(Theme.font(11, .medium))
+        .font(.system(size: 11, weight: .medium))
         .foregroundStyle(Color.white)
         .padding(.horizontal, 7)
         .frame(height: 20)
@@ -167,8 +142,8 @@ private struct SimNote: View {
 
     var body: some View {
         Text(text)
-            .font(Theme.font(12))
-            .foregroundStyle(Theme.fg2)
+            .font(.system(size: 12))
+            .foregroundStyle(Theme.tertiary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: 520, alignment: .leading)
     }
@@ -177,12 +152,7 @@ private struct SimNote: View {
 private struct Avatar: View {
     var size: CGFloat = 40
 
-    var body: some View {
-        Circle()
-            .fill(LinearGradient(colors: [Color(red: 0.97, green: 0.42, blue: 0.08), Color(red: 0.45, green: 0.18, blue: 0.55)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            .overlay(Text("M").font(Theme.font(size * 0.42, .semibold)).foregroundStyle(Color.white))
-            .frame(width: size, height: size)
-    }
+    var body: some View { Circle().fill(Theme.control).frame(width: size, height: size) }
 }
 
 // MARK: - X
@@ -197,7 +167,7 @@ private struct XPostsSimulation: View {
             SimNote(text: "X web and iOS: 2–4 images scroll sideways at a fixed height, the next one peeking. Each tile is cropped to between 3:4 and 20:17. A single image is shown uncropped from 3:4 to 2:1.")
             ForEach(posts.indices, id: \.self) { index in
                 if index == 1 {
-                    Badge(text: "X allows 4 images per post — images 5+ go in another post", kind: .danger, icon: "exclamationmark.octagon.fill")
+                    Pill(text: "X allows 4 images per post — images 5+ go in another post", tone: .danger)
                 }
                 if posts.count > 1 {
                     Text("Post \(index + 1) of \(posts.count)").sectionLabel()
@@ -220,16 +190,15 @@ private struct XPostMock: View {
             Avatar()
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 4) {
-                    Text("Matte").font(Theme.font(15, .semibold)).foregroundStyle(Theme.fg1)
-                    Image(systemName: "checkmark.seal.fill").font(.system(size: 12)).foregroundStyle(Theme.brand)
-                    Text("@matteapp · 2m").font(Theme.font(15)).foregroundStyle(Theme.fg3)
+                    Text("Matte").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.primary)
+                    Text("@matteapp · 2m").font(.system(size: 13)).foregroundStyle(Theme.tertiary)
                 }
                 Text(images.count == 1 ? "New piece, framed for the feed." : "\(images.count) new pieces, swipe →")
-                    .font(Theme.font(15)).foregroundStyle(Theme.fg1)
+                    .font(.system(size: 13)).foregroundStyle(Theme.primary)
                 media
                 HStack {
                     ForEach(["bubble.left", "arrow.2.squarepath", "heart", "chart.bar", "square.and.arrow.up"], id: \.self) { icon in
-                        Image(systemName: icon).font(.system(size: 13)).foregroundStyle(Theme.fg3)
+                        Image(systemName: icon).font(.system(size: 13)).foregroundStyle(Theme.tertiary)
                         if icon != "square.and.arrow.up" { Spacer() }
                     }
                 }
@@ -238,8 +207,8 @@ private struct XPostMock: View {
             }
         }
         .padding(16)
-        .background(Color.black, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .hairline(16, color: Theme.lineStrong)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 0.5))
     }
 
     @ViewBuilder private var media: some View {
@@ -279,9 +248,9 @@ private struct IGCarouselSimulation: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
                     Avatar(size: 30)
-                    Text("matteapp").font(Theme.font(13, .semibold)).foregroundStyle(Theme.fg1)
+                    Text("matteapp").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.primary)
                     Spacer()
-                    Image(systemName: "ellipsis").foregroundStyle(Theme.fg2)
+                    Image(systemName: "ellipsis").foregroundStyle(Theme.secondary)
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 50)
@@ -315,7 +284,7 @@ private struct IGCarouselSimulation: View {
                         HStack {
                             Spacer()
                             Text("\(current + 1)/\(slides.count)")
-                                .font(Theme.font(12, .medium)).foregroundStyle(Color.white)
+                                .font(.system(size: 12, weight: .medium)).foregroundStyle(Color.white)
                                 .padding(.horizontal, 8).frame(height: 22)
                                 .background(Color.black.opacity(0.6), in: Capsule())
                         }
@@ -333,30 +302,30 @@ private struct IGCarouselSimulation: View {
                     Image(systemName: "bookmark")
                 }
                 .font(.system(size: 16))
-                .foregroundStyle(Theme.fg1)
+                .foregroundStyle(Theme.primary)
                 .overlay {
                     HStack(spacing: 4) {
                         ForEach(0..<slides.count, id: \.self) { index in
-                            Circle().fill(index == current ? Theme.brand : Theme.fg3).frame(width: 6, height: 6)
+                            Circle().fill(index == current ? Theme.brand : Theme.tertiary).frame(width: 6, height: 6)
                         }
                     }
-                    .animation(Theme.motion, value: current)
+                    .animation(.easeOut(duration: 0.15), value: current)
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 44)
 
                 Text("**matteapp** \(slides.count) slide\(slides.count == 1 ? "" : "s"), cropped to the first image")
-                    .font(Theme.font(13)).foregroundStyle(Theme.fg1)
+                    .font(.system(size: 13)).foregroundStyle(Theme.primary)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 14)
             }
             .frame(width: width)
-            .background(Color.black, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .hairline(20, color: Theme.lineStrong)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 0.5))
 
             if images.count > IGCarousel.maxSlides {
-                Badge(text: "Instagram allows \(IGCarousel.maxSlides) slides — images \(IGCarousel.maxSlides + 1)+ need another post", kind: .danger, icon: "exclamationmark.octagon.fill")
+                Pill(text: "Instagram allows \(IGCarousel.maxSlides) slides — images \(IGCarousel.maxSlides + 1)+ need another post", tone: .danger)
             }
         }
         .onChange(of: images.map(\.id)) { _, _ in page = 0 }
@@ -392,7 +361,7 @@ private struct IGGridSimulation: View {
                 HStack(spacing: 20) {
                     Avatar(size: 64)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("matteapp").font(Theme.font(15, .semibold)).foregroundStyle(Theme.fg1)
+                        Text("matteapp").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.primary)
                         HStack(spacing: 16) {
                             stat("\(items.count)", "posts")
                             stat("1,204", "followers")
@@ -404,14 +373,14 @@ private struct IGGridSimulation: View {
                 .padding(16)
                 HStack {
                     Spacer()
-                    Image(systemName: "squareshape.split.3x3").foregroundStyle(Theme.fg1)
+                    Image(systemName: "squareshape.split.3x3").foregroundStyle(Theme.primary)
                     Spacer()
-                    Image(systemName: "play.rectangle").foregroundStyle(Theme.fg3)
+                    Image(systemName: "play.rectangle").foregroundStyle(Theme.tertiary)
                     Spacer()
-                    Image(systemName: "person.crop.square").foregroundStyle(Theme.fg3)
+                    Image(systemName: "person.crop.square").foregroundStyle(Theme.tertiary)
                     Spacer()
                 }
-                .font(.system(size: 15))
+                .font(.system(size: 13))
                 .frame(height: 40)
                 .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 0.5) }
                 LazyVGrid(columns: Array(repeating: GridItem(.fixed(tileWidth), spacing: 2), count: IGGrid.columns), spacing: 2) {
@@ -421,16 +390,16 @@ private struct IGGridSimulation: View {
                 }
             }
             .frame(width: tileWidth * CGFloat(IGGrid.columns) + 4)
-            .background(Color.black, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .hairline(20, color: Theme.lineStrong)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 0.5))
         }
     }
 
     private func stat(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(value).font(Theme.font(13, .semibold)).foregroundStyle(Theme.fg1)
-            Text(label).font(Theme.font(11)).foregroundStyle(Theme.fg3)
+            Text(value).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.primary)
+            Text(label).font(.system(size: 11)).foregroundStyle(Theme.tertiary)
         }
     }
 }

@@ -28,7 +28,7 @@ Matte is a free, native macOS batch exporter for designers who work from a wide 
 - White, off-white, black, paper grey and ink presets, recent colours, the system colour panel, an eyedropper, hex entry, and automatic edge-matched colours
 - Previews render off the main thread from a downscaled copy and are cached; full resolution is decoded only for export, which runs in the background with progress and cancel
 - Batch export to PNG or JPEG, with every written file re-read and pixel-verified. A single file (1 image × 1 format) is saved directly in the output folder; multi-file exports get one subfolder per image
-- Optional watched folder (Settings) that exports new stable image files automatically
+- Optional watched folder (sidebar or Settings) that exports new stable image files automatically
 - Native SwiftUI interface, no account, analytics, network access, or Xcode project
 
 ## Requirements
@@ -54,6 +54,28 @@ swift run -c release matte-cli samples/sample-1920x1080.png \
 
 Run `swift run matte-cli --list` for the full format table.
 
+Export options (all optional; `swift run matte-cli --help` lists them and which file types this Mac can write):
+
+```sh
+swift run -c release matte-cli samples/sample-1920x1080.png --out out/web \
+  --formats x-landscape,ig-feed-45 --type webp --quality 85 --scale 2x \
+  --name "{name}_{format}_{w}x{h}" --override ig-feed-45:pad=0.1,mode=fill \
+  --colorspace p3 --max-size 5MB
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--type png\|jpeg\|heic\|webp` | File type (default `png`; `--jpeg` still works). HEIC/WebP need a system encoder; when it is missing Matte writes PNG and warns. |
+| `--quality 0-100` | JPEG/HEIC/WebP quality (default 92). |
+| `--scale 1x\|2x\|max:N` | `2x` doubles each format's pixel size; `max:N` caps the long edge at N px, keeping the ratio (never upscales). |
+| `--name "<pattern>"` | Tokens `{name}` `{format}` `{w}` `{h}` `{ratio}` `{date}` `{index}`; default `{name}__{format}_{w}x{h}`. Names are sanitised and existing files get `-2`, `-3`… (`--overwrite` replaces them instead). |
+| `--override id:pad=0.1,mode=fill` | Per-format padding and/or mode. Repeatable. |
+| `--colorspace srgb\|p3` | Output colour space (default sRGB). |
+| `--keep-metadata` | Copy the source's EXIF/TIFF/IPTC (never GPS; orientation reset). Stripped by default. |
+| `--max-size 5MB` | Byte cap (`B`/`KB`/`MB`, decimal). Lossy types lower quality, down to 40, to fit; PNG warns, or writes JPEG with `--allow-lossy-fallback`. `--platform-caps` uses X 5 MB / Instagram 8 MB instead. |
+
+Each written file is printed with its path, pixel size, byte size and any warnings. `swift run matte-cli --selftest` checks every file type, scaling, filename patterns, size caps and metadata handling in a temporary folder.
+
 `--simulate` prints how a set of images (in posting order) is cropped by X and Instagram, using the same maths as the app's simulator:
 
 ```sh
@@ -76,8 +98,8 @@ Exports never use `NSImage` drawing or display scale, so a 1080×1350 target is 
 | `Sources/MatteCore/Simulator.swift` | X single/carousel and Instagram carousel/grid crop rules, crop-loss maths |
 | `Sources/Matte/AppModel.swift` | State, selection, persistence, background export, watched folder, launch hooks |
 | `Sources/Matte/ImagePipeline.swift` | Off-main decoding, preview cache, debounced async previews |
+| `Sources/Matte/ContentView.swift` | Window layout, export controls, confirm sheet, shared v0.1 theme and button styles |
 | `Sources/Matte/Sidebar.swift`, `FormatsPanel.swift`, `SimulatorView.swift`, `Inspector.swift`, `ColorControls.swift`, `SettingsView.swift` | Views |
-| `Sources/Matte/Components/` | Interfere theme tokens and custom controls (segmented control, switch, slider, buttons, badges) |
 | `Sources/matte-cli/main.swift` | Headless batch exporter and verification CLI |
 | `scripts/make-icon.swift` | Programmatic app icon generator |
 

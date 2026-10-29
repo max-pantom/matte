@@ -5,8 +5,11 @@ import UniformTypeIdentifiers
 
 public enum MatteError: LocalizedError {
     case cannotRead(URL), cannotCreateContext, cannotCreateDestination(URL), cannotWrite(URL), verificationFailed(URL, expected: CGSize, actual: CGSize)
+    case cannotEncode(String), noOutputDirectory
     public var errorDescription: String? {
         switch self {
+        case .cannotEncode(let type): "Could not encode \(type)"
+        case .noOutputDirectory: "No export location set"
         case .cannotRead(let url): "Could not read image: \(url.path)"
         case .cannotCreateContext: "Could not create image context"
         case .cannotCreateDestination(let url): "Could not create image destination: \(url.path)"
@@ -76,10 +79,28 @@ public enum MatteRenderer {
         let factor: Double = if let previewMaxDimension { min(1, Double(previewMaxDimension) / Double(max(format.width, format.height))) } else { 1 }
         let width = max(1, Int((Double(format.width) * factor).rounded()))
         let height = max(1, Int((Double(format.height) * factor).rounded()))
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB), let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw MatteError.cannotCreateContext }
+        return try render(image: image, format: format, options: options, width: width, height: height, factor: factor, colorSpace: .sRGB)
+    }
+
+    /// Renders at an explicit pixel size (e.g. a scaled export). `cornerRadius` scales with the width relative to the format.
+    public static func render(image: CGImage, format: MatteFormat, options: RenderOptions, pixelSize: PixelSize, colorSpace: ExportColorSpace = .sRGB) throws -> CGImage {
+        let width = max(1, pixelSize.width), height = max(1, pixelSize.height)
+        return try render(image: image, format: format, options: options, width: width, height: height, factor: Double(width) / Double(format.width), colorSpace: colorSpace)
+    }
+
+    private static func render(image: CGImage, format: MatteFormat, options: RenderOptions, width: Int, height: Int, factor: Double, colorSpace: ExportColorSpace) throws -> CGImage {
+        guard let space = CGColorSpace(name: colorSpace.cgColorSpaceName), let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw MatteError.cannotCreateContext }
 
         let frameColor = options.autoMatch ? autoMatchEdges(image: image) : options.color
-        context.setFillColor(CGColor(red: frameColor.red, green: frameColor.green, blue: frameColor.blue, alpha: frameColor.alpha))
+        let legacyFill = CGColor(red: frameColor.red, green: frameColor.green, blue: frameColor.blue, alpha: frameColor.alpha)
+        if colorSpace == .sRGB {
+            context.setFillColor(legacyFill)
+        } else {
+            // Frame colours are sRGB values; tag them so a P3 canvas shows the same colour.
+            let components: [CGFloat] = [CGFloat(frameColor.red), CGFloat(frameColor.green), CGFloat(frameColor.blue), CGFloat(frameColor.alpha)]
+            let tagged = CGColorSpace(name: CGColorSpace.sRGB).flatMap { CGColor(colorSpace: $0, components: components) }
+            context.setFillColor(tagged ?? legacyFill)
+        }
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         context.interpolationQuality = .high
 
@@ -135,19 +156,11 @@ public enum MatteRenderer {
         return outputDirectory.appendingPathComponent("\(base)__\(format.id)_\(format.width)x\(format.height).\(type.fileExtension)")
     }
 
+    /// Legacy entry point: 1x, sRGB, metadata stripped, overwrites `outputURL(...)`. Prefer `export(image:format:options:...)`.
     public static func export(image: CGImage, sourceURL: URL, format: MatteFormat, options: RenderOptions, type: ExportType, quality: Double = 0.92, outputDirectory: URL) throws -> URL {
-        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let rendered = try render(image: image, format: format, options: options)
+        let exportOptions = ExportOptions(legacyType: type, quality: min(1, max(0.1, quality)), outputDirectory: outputDirectory)
         let url = outputURL(sourceURL: sourceURL, format: format, type: type, outputDirectory: outputDirectory)
-        let uti = type == .png ? UTType.png.identifier : UTType.jpeg.identifier
-        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, uti as CFString, 1, nil) else { throw MatteError.cannotCreateDestination(url) }
-        let properties: CFDictionary = type == .jpeg ? [kCGImageDestinationLossyCompressionQuality: min(1, max(0.1, quality))] as CFDictionary : [:] as CFDictionary
-        CGImageDestinationAddImage(destination, rendered, properties)
-        guard CGImageDestinationFinalize(destination) else { throw MatteError.cannotWrite(url) }
-        let actual = try imageSize(at: url)
-        let expected = format.size
-        guard Int(actual.width) == format.width, Int(actual.height) == format.height else { throw MatteError.verificationFailed(url, expected: expected, actual: actual) }
-        return url
+        return try performExport(image: image, format: format, options: exportOptions, renderOptions: options, sourceURL: sourceURL, outputDirectory: outputDirectory, index: 1, date: Date(), avoiding: [], fixedURL: url).url
     }
 
     private static func normalizedPixels(image: CGImage) -> [UInt8]? {

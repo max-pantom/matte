@@ -1,6 +1,6 @@
 # Testing
 
-v0.1 results below were observed on 29 October 2026 with Apple Swift 6.3.2 (`arm64-apple-macosx28.0`) and the macOS 26.5 SDK. **v0.2 has not been built or run yet**: the v0.2 sections state the expected results and must be re-run on a Mac.
+v0.1 results below were observed on 29 October 2026 with Apple Swift 6.3.2 (`arm64-apple-macosx28.0`) and the macOS 26.5 SDK. **v0.2 (including the restored v0.1 look) has not been built or run yet**: the v0.2 sections state the expected results and must be re-run on a Mac.
 
 This managed workspace does not permit SwiftPM or Clang to write their normal user caches, so all commands use the fallback requested in `SPEC.md`:
 
@@ -127,8 +127,9 @@ The app reads these environment variables at launch, for screenshots and scripte
 | `MATTE_FORMATS=id,id` or `all` | Check these formats for this run (not saved). |
 | `MATTE_FORMAT=id` | Inspected format for the context preview. |
 | `MATTE_TAB=formats` or `simulate` | Main panel tab. |
-| `MATTE_COLORPANEL=1` | Opens the custom colour picker (the system colour panel) after launch; the Custom swatch shows its active ring. |
+| `MATTE_COLORPANEL=1` | Opens the custom colour picker (the system colour panel) after launch; the colour well shows its blue ring. |
 | `MATTE_SETTINGS=1` | Opens the Settings window on launch. |
+| `MATTE_EXPORTOPTIONS=1` | Expands the inspector's Export options section for this run (not saved). |
 | `MATTE_SNAPSHOT=out.png` | After 3 s, writes a PNG of the main window (the Settings window when `MATTE_SETTINGS=1`) via `cacheDisplay(in:to:)`, then quits. |
 | `MATTE_SNAPSHOT_SIZE=1280x820` | Resizes the main window before the snapshot. |
 
@@ -143,18 +144,33 @@ MATTE_OPEN="$S/sample-1920x1080.png:$S/sample-dark-1920x1080.png" MATTE_SELECT=1
   MATTE_TAB=simulate MATTE_SNAPSHOT=out/simulate.png $APP
 MATTE_SETTINGS=1 MATTE_SNAPSHOT=out/settings.png $APP
 MATTE_OPEN="$S/sample-1920x1080.png" MATTE_COLORPANEL=1 MATTE_SNAPSHOT=out/colour.png $APP
+MATTE_OPEN="$S/sample-1920x1080.png" MATTE_SELECT=all MATTE_FORMATS=x-carousel-45 MATTE_FORMAT=x-carousel-45 \
+  MATTE_EXPORTOPTIONS=1 MATTE_SNAPSHOT=out/export-options.png $APP
 ```
 
-Manual checklist:
+Manual checklist (v0.2 features in the restored v0.1 look; compare with `docs/screenshot.png`):
 
-- First launch (or `defaults delete local.matte checkedFormats`): no images selected, no formats checked; the Export button is disabled with "Select at least one image", then "Pick at least one format".
-- Click, ⌘-click, ⇧-click, ⌘A (outside the hex field) and Esc behave as described; selected rows show the blue tint, ring and checkmark; hover is distinct.
-- The Export label reads `Export N × M = T files`; exporting into a folder that already holds those files, or more than 40 files, shows the confirmation sheet; Cancel in the progress bar stops after the current file.
+- Layout matches v0.1: black shell, 256 pt sidebar (images only; the watched folder lives only in Settings), panel with `All · X · Instagram | Simulate` underline tabs, 300 pt inspector (Frame, Colour, Export options, Preview in context) with native segmented pickers, slider and mini switches. System font throughout.
+- First launch (or `defaults delete local.matte checkedFormats`): no images selected, no formats checked; the white Export button in the header is dimmed with a small orange hint, "Select at least one image" then "Pick at least one format".
+- Click, ⌘-click, ⇧-click, ⌘A (outside the hex field) and Esc work; selected rows use v0.1's grey highlight (no blue tint); the inspected-but-unselected row has a fainter one; the sidebar shows "N of M selected".
+- Clicking a format card inspects it (blue outline, as in v0.1); the checkbox includes it in exports. "Check all / Uncheck all" acts on the visible tab.
+- The Export label reads `Export N × M = K files`; exporting into a folder that already holds those files, or more than 40 files, shows the confirmation sheet; while exporting the header shows a progress bar, "x of y" and Cancel.
 - Exporting 1 image × 1 format writes `<output folder>/<name>__<format>_<w>x<h>.png` directly (no subfolder) and Reveal selects that file; 1 × 2 or 2 × 1 creates one subfolder per image. The watched folder follows the same rule inside `<watched>/Matte`.
 - Dragging the padding slider and switching colours stays smooth; previews update about 80 ms after you stop.
-- Eyedropper: Esc cancels without changing the colour. Custom swatch: the system colour panel updates the frame live; closing it adds the colour to Recent.
-- Simulate tab: X post with five selected images shows the red "X allows 4 images per post" note and two posts; the Original / Matte export toggle changes tiles and crop badges.
-- Settings (⌘,): General and Watched folder tabs; the main window has no watched-folder controls.
+- Colour: preset circles, recent colours row (after the colour panel closes or a hex is committed), eyedropper (Esc cancels without changing the colour), hex field (invalid input shows a red hint), colour well opens the system colour panel and updates live.
+- Simulate tab: X post with five selected images shows the "X allows 4 images per post" pill and two posts; the Original / Matte export picker changes tiles and crop badges; "Matte export" shows a format menu.
+- Settings (⌘,): one plain pane with file type (+ quality for lossy types), output folder and the watched folder. File type and quality are the same values as in the inspector's Export options (change one, the other follows; both persist). The export folder is also shown under the Export button; clicking it chooses another.
+
+Export options (v0.2, inspector; not yet observed):
+
+- Collapsed by default: a "Export options ›" header with a summary such as `PNG · 1×`; click to expand. The expanded/collapsed state persists.
+- Type shows PNG, JPEG and only the HEIC/WebP encoders this Mac has. Quality appears only for JPEG/HEIC/WebP.
+- Scale 1× / 2× / Max (with a px field). 2× of `x-carousel-45` writes 2160×2700; Max 1000 writes 800×1000.
+- File name pattern with the token list and a live example for the inspected image and format; an empty field uses `{name}__{format}_{w}x{h}`. A pattern without `{format}` in a multi-format export writes `-2`, `-3`… instead of overwriting within the batch.
+- Colour space sRGB / P3, Strip metadata (off copies EXIF/TIFF/IPTC, never GPS), Max size Off / Platform (X 5 MB, Instagram 8 MB) / Custom MB; a lossy type lowers quality to fit, PNG offers "Write JPEG when PNG is too big". Warnings (quality lowered, over cap, renamed…) appear in the export toast.
+- Override for the inspected format: Frame / Fit / Fill and Own padding; the format card, context preview, simulator and export all use it. Reset clears it; the collapsed summary counts overrides.
+- The single-file rule still holds (1 × 1 directly in the folder, otherwise one subfolder per image). The overwrite check uses the planned file names; the confirmation sheet offers Replace and export or Keep both (writes `-2`…).
+- Options survive relaunch (JSON in `defaults read local.matte exportOptions`); old `exportType` / `jpegQuality` settings are migrated once.
 
 ## Launch check
 

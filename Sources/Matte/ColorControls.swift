@@ -2,97 +2,38 @@ import AppKit
 import MatteCore
 import SwiftUI
 
+/// v0.1's colour row (swatches + eyedropper, hex field + colour well, auto-match), plus recent colours.
+/// The well opens NSColorPanel through `ColorPanelBridge`, which throttles live updates; previews render off-main.
 struct ColorControls: View {
     @ObservedObject var model: AppModel
     @State private var hexDraft = ""
     @State private var hexInvalid = false
     @FocusState private var hexFocused: Bool
 
-    private let columns = Array(repeating: GridItem(.fixed(26), spacing: 8), count: 7)
-
     private var currentHex: String { model.colorHex.uppercased() }
-    private var isKnownColor: Bool {
-        ColorPreset.all.contains { $0.hex == currentHex } || model.recentColors.contains(currentHex)
-    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Colour").sectionLabel()
-                Spacer()
-                Text(model.autoMatch ? "Auto · \(model.focusedImage?.edgeColor.hex ?? "edges")" : currentHex)
-                    .monoCaption()
-                    .contentTransition(.opacity)
-            }
-
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                if model.autoMatch {
-                    Swatch(color: model.focusedImage?.edgeColor ?? .white, name: "Matched from image edges", isSelected: true, badge: "A") {}
-                        .transition(.scale(scale: 0.6).combined(with: .opacity))
-                }
-                ForEach(ColorPreset.all) { preset in
-                    Swatch(color: FrameColor(hex: preset.hex) ?? .white, name: "\(preset.name) \(preset.hex)",
-                           isSelected: !model.autoMatch && currentHex == preset.hex, isDimmed: model.autoMatch) {
-                        withAnimation(Theme.motion) { model.applyColor(preset.hex, remember: false) }
-                    }
-                }
-                CustomSwatch(isActive: model.colorPanelOpen || (!model.autoMatch && !isKnownColor), isDimmed: model.autoMatch) {
-                    model.colorPanelOpen.toggle()
-                }
-            }
-
-            if !model.recentColors.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Recent").font(Theme.font(11)).foregroundStyle(Theme.fg3)
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                        ForEach(model.recentColors, id: \.self) { hex in
-                            Swatch(color: FrameColor(hex: hex) ?? .white, name: hex,
-                                   isSelected: !model.autoMatch && currentHex == hex, isDimmed: model.autoMatch) {
-                                withAnimation(Theme.motion) { model.applyColor(hex, remember: false) }
-                            }
-                        }
-                    }
-                }
-                .transition(.opacity)
-            }
-
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Colour").sectionLabel()
             HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(swiftUIColor(FrameColor.parseHex6(hexDraft) ?? model.frameColor))
-                        .frame(width: 14, height: 14)
-                        .hairline(3, color: Theme.lineStrong)
-                    TextField("#RRGGBB", text: $hexDraft)
-                        .textFieldStyle(.plain)
-                        .font(Theme.mono(12))
-                        .foregroundStyle(Theme.fg1)
-                        .focused($hexFocused)
-                        .onSubmit(commitHex)
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 32)
-                .background(Theme.component, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(hexInvalid ? Theme.danger : hexFocused ? Theme.brand : Theme.line, lineWidth: hexInvalid || hexFocused ? 1 : 0.5)
-                )
-                .animation(.easeOut(duration: 0.075), value: hexFocused)
-
-                Button { model.sampleColor() } label: { Image(systemName: "eyedropper") }
-                    .buttonStyle(IconButtonStyle(size: 32, isActive: model.isSampling))
-                    .help("Pick a colour from the screen")
+                ForEach(ColorPreset.all) { preset in swatch(preset.hex, help: "\(preset.name) \(preset.hex)") }
+                Spacer(); Button { model.sampleColor() } label: { Image(systemName: "eyedropper") }.buttonStyle(IconButtonStyle(isActive: model.isSampling)).help("Pick a colour from the screen")
             }
-            if hexInvalid {
-                Text("Use #RRGGBB, for example #F4F1EA").font(Theme.font(11)).foregroundStyle(Theme.dangerText)
-                    .transition(.opacity)
+            if !model.recentColors.isEmpty {
+                HStack(spacing: 8) { ForEach(model.recentColors, id: \.self) { hex in swatch(hex, help: "Recent \(hex)") } }
             }
-
-            MatteSwitch(title: "Match edges", isOn: $model.autoMatch,
-                        subtitle: model.autoMatch ? "Uses the most common colour along each image's edges." : nil)
+            HStack {
+                TextField("#RRGGBB", text: $hexDraft).textFieldStyle(.plain).font(.system(size: 12, design: .monospaced)).focused($hexFocused).onSubmit(commitHex)
+                    .padding(8).background(Theme.control, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(hexInvalid ? Tone.danger.dot : .clear, lineWidth: 1))
+                Button { model.colorPanelOpen.toggle() } label: {
+                    Capsule().fill(swiftUIColor(model.autoMatch ? (model.focusedImage?.edgeColor ?? model.frameColor) : model.frameColor)).frame(width: 44, height: 24)
+                        .overlay(Capsule().stroke(model.colorPanelOpen ? Theme.brand : Theme.line, lineWidth: model.colorPanelOpen ? 2 : 1))
+                }.buttonStyle(.plain).help("Custom colour…")
+            }
+            if hexInvalid { Text("Use #RRGGBB, for example #F4F1EA").font(.system(size: 11)).foregroundStyle(Tone.danger.text) }
+            Toggle("Auto-match edges", isOn: $model.autoMatch).toggleStyle(.switch).controlSize(.mini).foregroundStyle(Theme.secondary)
         }
-        .animation(Theme.motion, value: model.autoMatch)
-        .animation(Theme.motion, value: model.recentColors)
-        .animation(Theme.motion, value: hexInvalid)
         .background(
             ColorPanelBridge(
                 isOpen: $model.colorPanelOpen,
@@ -112,6 +53,13 @@ struct ColorControls: View {
         }
     }
 
+    private func swatch(_ hex: String, help: String) -> some View {
+        Button { model.applyColor(hex, remember: false) } label: {
+            Circle().fill(swiftUIColor(FrameColor(hex: hex) ?? .white)).frame(width: 25, height: 25)
+                .overlay(Circle().stroke(!model.autoMatch && currentHex == hex ? Theme.brand : Theme.line, lineWidth: 2))
+        }.buttonStyle(.plain).help(help)
+    }
+
     private func commitHex() {
         guard let color = FrameColor.parseHex6(hexDraft) else {
             hexInvalid = true
@@ -119,81 +67,7 @@ struct ColorControls: View {
         }
         hexInvalid = false
         hexDraft = color.hex
-        withAnimation(Theme.motion) { model.applyColor(color.hex, remember: true) }
-    }
-}
-
-func swiftUIColor(_ color: FrameColor) -> Color {
-    Color(.sRGB, red: color.red, green: color.green, blue: color.blue, opacity: color.alpha)
-}
-
-struct Swatch: View {
-    let color: FrameColor
-    let name: String
-    let isSelected: Bool
-    var isDimmed = false
-    var badge: String? = nil
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                Circle().fill(swiftUIColor(color))
-                Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(color.luminance > 0.6 ? Color.black.opacity(0.75) : Color.white)
-                        .transition(.scale(scale: 0.5).combined(with: .opacity))
-                } else if let badge {
-                    Text(badge).font(Theme.font(9, .semibold)).foregroundStyle(color.luminance > 0.6 ? Color.black.opacity(0.6) : Color.white.opacity(0.8))
-                }
-            }
-            .frame(width: 20, height: 20)
-            .padding(3)
-            .overlay(Circle().strokeBorder(isSelected ? Theme.brand : hovering ? Theme.lineStrong : Color.clear, lineWidth: isSelected ? 2 : 1))
-            .frame(width: 26, height: 26)
-            .scaleEffect(hovering && !isSelected ? 1.06 : 1)
-            .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .opacity(isDimmed ? 0.3 : 1)
-        .help(name)
-        .onHover { hovering = $0 }
-        .animation(Theme.motion, value: isSelected)
-        .animation(Theme.motion, value: hovering)
-        .animation(Theme.motion, value: isDimmed)
-    }
-}
-
-/// Rainbow swatch that opens the system colour panel.
-struct CustomSwatch: View {
-    let isActive: Bool
-    var isDimmed = false
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                Circle().fill(AngularGradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red], center: .center))
-                Circle().fill(Color.black.opacity(0.25)).padding(5)
-                Image(systemName: "plus").font(.system(size: 8, weight: .bold)).foregroundStyle(Color.white)
-            }
-            .frame(width: 20, height: 20)
-            .padding(3)
-            .overlay(Circle().strokeBorder(isActive ? Theme.brand : hovering ? Theme.lineStrong : Color.clear, lineWidth: isActive ? 2 : 1))
-            .frame(width: 26, height: 26)
-            .scaleEffect(hovering ? 1.06 : 1)
-            .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .opacity(isDimmed ? 0.3 : 1)
-        .help("Custom… (system colour panel)")
-        .onHover { hovering = $0 }
-        .animation(Theme.motion, value: isActive)
-        .animation(Theme.motion, value: hovering)
+        model.applyColor(color.hex, remember: true)
     }
 }
 

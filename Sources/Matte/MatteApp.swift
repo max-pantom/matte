@@ -22,6 +22,7 @@ struct MatteApp: App {
                 .preferredColorScheme(.dark)
         }
         .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -60,7 +61,7 @@ enum MainWindow {
     static weak var window: NSWindow?
 }
 
-/// Configures the hosting window: transparent full-size title bar over a black shell.
+/// Records the hosting window for the snapshot/resize dev hooks; window styling is left to the scene (as in v0.1).
 struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> ConfiguringView { ConfiguringView(frame: .zero) }
     func updateNSView(_ nsView: ConfiguringView, context: Context) {}
@@ -70,11 +71,6 @@ struct WindowConfigurator: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard let window else { return }
             MainWindow.window = window
-            window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
-            window.styleMask.insert(.fullSizeContentView)
-            window.backgroundColor = .black
-            window.isOpaque = true
         }
     }
 }

@@ -125,7 +125,7 @@ struct RenderedPreview: View {
                     .interpolation(.high)
                     .aspectRatio(contentMode: contentMode)
             } else {
-                Rectangle().fill(Theme.cardSubtle)
+                Color.clear
             }
         }
         .task(id: request?.key) { await load() }

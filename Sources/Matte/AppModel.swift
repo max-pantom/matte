@@ -33,10 +33,13 @@ struct ExportPlan: Identifiable, Sendable {
     let id = UUID()
     let images: [SourceImage]
     let formats: [MatteFormat]
-    let options: RenderOptions
-    let type: ExportType
-    let quality: Double
+    let render: RenderOptions
+    /// Encoding, scale, naming and per-format overrides. `outputDirectory` is unused: each file goes to `directory(for:)`.
+    var export: ExportOptions
     let root: URL
+    /// Fixed for the batch so {date} and the overwrite check agree with what is written.
+    let date: Date
+    /// Planned files (via `MatteRenderer.plannedURL`) already on disk.
     let existing: [URL]
 
     var total: Int { images.count * formats.count }
@@ -56,6 +59,7 @@ struct ExportPlan: Identifiable, Sendable {
 struct ExportOutcome: Sendable {
     var written = 0
     var failures: [String] = []
+    var warnings: [String] = []
     var cancelled = false
     var lastFolder: URL?
     var lastFile: URL?
@@ -65,6 +69,17 @@ struct ExportOutcome: Sendable {
 private struct FileResult: Sendable {
     var file: URL?
     var failure: String?
+    var warnings: [String] = []
+}
+
+/// Max file size control: no cap, the format's platform cap, or `maxFileSizeBytes`.
+enum SizeCapChoice: String, CaseIterable, Hashable {
+    case off, platform, custom
+}
+
+/// Scale control: `ExportScale` without the associated value, so it can drive a segmented picker.
+enum ScaleChoice: String, CaseIterable, Hashable {
+    case x1, x2, max
 }
 
 @MainActor
@@ -84,6 +99,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var checked: Set<String> = []
     @Published var selectedFormatID = "x-carousel-45"
     @Published var mainTab: MainTab = .formats
+    @Published var platformFilter = "All"
 
     // MARK: Frame
     @Published var mode: RenderMode { didSet { defaults.set(mode.rawValue, forKey: "mode") } }
@@ -97,8 +113,10 @@ final class AppModel: ObservableObject {
     private var sampler: NSColorSampler?
 
     // MARK: Export
-    @Published var exportType: ExportType { didSet { defaults.set(exportType.rawValue, forKey: "exportType") } }
-    @Published var jpegQuality: Double { didSet { defaults.set(jpegQuality, forKey: "jpegQuality") } }
+    /// The single source of truth for file type, quality, scale, naming, colour space, metadata, size cap and per-format overrides
+    /// (inspector and Settings both edit it). Stored as JSON under "exportOptions"; the folder lives in `outputFolder`.
+    @Published var exportOptions: ExportOptions { didSet { saveExportOptions() } }
+    @Published var exportOptionsExpanded: Bool { didSet { defaults.set(exportOptionsExpanded, forKey: "exportOptionsExpanded") } }
     @Published var outputFolder: URL { didSet { defaults.set(outputFolder.path, forKey: "outputFolder") } }
     @Published var pendingExport: ExportPlan?
     @Published private(set) var exportProgress: Double?
@@ -134,8 +152,8 @@ final class AppModel: ObservableObject {
         colorHex = FrameColor.parseHex6(defaults.string(forKey: "color") ?? "")?.hex ?? "#F4F1EA"
         autoMatch = defaults.bool(forKey: "autoMatch")
         recentColors = Array((defaults.stringArray(forKey: "recentColors") ?? []).prefix(6))
-        exportType = ExportType(rawValue: defaults.string(forKey: "exportType") ?? "") ?? .png
-        jpegQuality = defaults.object(forKey: "jpegQuality") == nil ? 0.92 : defaults.double(forKey: "jpegQuality")
+        exportOptions = AppModel.loadExportOptions(from: UserDefaults.standard)
+        exportOptionsExpanded = defaults.bool(forKey: "exportOptionsExpanded")
         outputFolder = URL(fileURLWithPath: defaults.string(forKey: "outputFolder") ?? NSString(string: "~/Desktop/Matte Exports").expandingTildeInPath)
         watchedFolder = defaults.string(forKey: "watchedFolder").map { URL(fileURLWithPath: $0) }
         watching = defaults.bool(forKey: "watching")
@@ -144,6 +162,7 @@ final class AppModel: ObservableObject {
 
         let env = ProcessInfo.processInfo.environment
         launchOpensSettings = env["MATTE_SETTINGS"] == "1"
+        if env["MATTE_EXPORTOPTIONS"] == "1" { exportOptionsExpanded = true }
         updateWatcher()
         applyLaunchEnvironment(env)
     }
@@ -159,8 +178,11 @@ final class AppModel: ObservableObject {
     }
     var selectedImagesInListOrder: [SourceImage] { images.filter { selection.contains($0.id) } }
     var checkedFormats: [MatteFormat] { MatteFormat.all.filter { checked.contains($0.id) } }
+    var visibleFormats: [MatteFormat] { MatteFormat.all.filter { platformFilter == "All" || $0.platform.rawValue == platformFilter } }
     var frameColor: FrameColor { FrameColor(hex: colorHex) ?? .white }
     var renderOptions: RenderOptions { RenderOptions(mode: mode, padding: padding, alwaysPadPerfect: alwaysPad, color: frameColor, autoMatch: autoMatch) }
+    /// Frame options with the format's export override (padding, fit/fill) applied, so previews match exports.
+    func renderOptions(for format: MatteFormat) -> RenderOptions { exportOptions.renderOptions(renderOptions, for: format) }
     var isExporting: Bool { exportProgress != nil }
 
     var exportCount: Int { selection.count * checked.count }
@@ -300,15 +322,14 @@ final class AppModel: ObservableObject {
 
     func toggle(_ format: MatteFormat) {
         if checked.contains(format.id) { checked.remove(format.id) } else { checked.insert(format.id) }
-        selectedFormatID = format.id
         if format.previewKind.isPostImage {
             if format.platform == .x { simXFormatID = format.id } else { simIGFormatID = format.id }
         }
         saveChecked()
     }
 
-    func setPlatform(_ platform: Platform, checked isOn: Bool) {
-        let ids = MatteFormat.formats(for: platform).map(\.id)
+    func setChecked(_ formats: [MatteFormat], _ isOn: Bool) {
+        let ids = formats.map(\.id)
         if isOn { checked.formUnion(ids) } else { checked.subtract(ids) }
         saveChecked()
     }
@@ -356,6 +377,108 @@ final class AppModel: ObservableObject {
         if let hex { applyColor(hex, remember: true) }
     }
 
+    // MARK: Export options
+
+    private static func loadExportOptions(from defaults: UserDefaults) -> ExportOptions {
+        if let data = defaults.data(forKey: "exportOptions"), let options = try? JSONDecoder().decode(ExportOptions.self, from: data) { return options }
+        // Migrate the v0.1 PNG/JPEG + quality settings.
+        let legacyType = ExportType(rawValue: defaults.string(forKey: "exportType") ?? "") ?? .png
+        let quality = defaults.object(forKey: "jpegQuality") == nil ? ExportOptions.defaultQuality : defaults.double(forKey: "jpegQuality")
+        return ExportOptions(fileType: ExportFileType(legacyType), quality: quality)
+    }
+
+    private func saveExportOptions() {
+        var stored = exportOptions
+        stored.outputDirectory = nil
+        if let data = try? JSONEncoder().encode(stored) { defaults.set(data, forKey: "exportOptions") }
+    }
+
+    var sizeCapChoice: SizeCapChoice {
+        get {
+            if let bytes = exportOptions.maxFileSizeBytes, bytes > 0 { return .custom }
+            return exportOptions.usePlatformSizeCaps ? .platform : .off
+        }
+        set {
+            switch newValue {
+            case .off: exportOptions.maxFileSizeBytes = nil; exportOptions.usePlatformSizeCaps = false
+            case .platform: exportOptions.maxFileSizeBytes = nil; exportOptions.usePlatformSizeCaps = true
+            case .custom: if sizeCapChoice != .custom { exportOptions.maxFileSizeBytes = 5_000_000 }
+            }
+        }
+    }
+
+    var scaleChoice: ScaleChoice {
+        get {
+            switch exportOptions.scale {
+            case .x1: .x1
+            case .x2: .x2
+            case .maxLongEdge: .max
+            }
+        }
+        set {
+            switch newValue {
+            case .x1: exportOptions.scale = .x1
+            case .x2: exportOptions.scale = .x2
+            case .max: if scaleChoice != .max { exportOptions.scale = .maxLongEdge(lastMaxLongEdge) }
+            }
+        }
+    }
+
+    /// Long-edge limit for `.maxLongEdge`; remembered while another scale is chosen.
+    var maxLongEdge: Int {
+        get {
+            if case .maxLongEdge(let limit) = exportOptions.scale { return limit }
+            return lastMaxLongEdge
+        }
+        set {
+            let limit = min(20_000, max(16, newValue))
+            lastMaxLongEdge = limit
+            exportOptions.scale = .maxLongEdge(limit)
+        }
+    }
+    private var lastMaxLongEdge = 2048
+
+    /// Custom cap in decimal megabytes (1 MB = 1,000,000 bytes, as in `ByteSize`).
+    var customMaxSizeMB: Double {
+        get { Double(exportOptions.maxFileSizeBytes ?? 5_000_000) / 1_000_000 }
+        set { if newValue.isFinite, newValue > 0 { exportOptions.maxFileSizeBytes = max(1_000, Int((newValue * 1_000_000).rounded())) } }
+    }
+
+    /// Fit/fill override for the inspected format; nil follows the Frame setting.
+    var inspectedModeOverride: RenderMode? {
+        get { formatOverride(for: selectedFormat).mode }
+        set { var value = formatOverride(for: selectedFormat); value.mode = newValue; setOverride(value, for: selectedFormat) }
+    }
+
+    var inspectedHasPaddingOverride: Bool {
+        get { formatOverride(for: selectedFormat).padding != nil }
+        set { var value = formatOverride(for: selectedFormat); value.padding = newValue ? padding : nil; setOverride(value, for: selectedFormat) }
+    }
+
+    /// Padding for the inspected format: its override, else the Frame padding.
+    var inspectedPadding: Double {
+        get { formatOverride(for: selectedFormat).padding ?? padding }
+        set { var value = formatOverride(for: selectedFormat); value.padding = min(0.3, max(0, newValue)); setOverride(value, for: selectedFormat) }
+    }
+
+    func formatOverride(for format: MatteFormat) -> FormatOverride { exportOptions.overrides[format.id] ?? FormatOverride() }
+
+    func setOverride(_ value: FormatOverride, for format: MatteFormat) {
+        exportOptions.overrides[format.id] = value.isEmpty ? nil : value
+    }
+
+    func resetOverride(for format: MatteFormat) { exportOptions.overrides[format.id] = nil }
+
+    /// Short summary for the collapsed section header, e.g. `JPEG 92 · 2× · P3`.
+    var exportOptionsSummary: String {
+        let options = exportOptions
+        var parts = [options.resolvedFileType.displayName + (options.resolvedFileType.isLossy ? " \(Int((options.quality * 100).rounded()))" : "")]
+        parts.append(options.scale.label)
+        if options.colorSpace == .displayP3 { parts.append("P3") }
+        if !options.overrides.isEmpty { parts.append("\(options.overrides.count) override\(options.overrides.count == 1 ? "" : "s")") }
+        return parts.joined(separator: " · ")
+    }
+
     // MARK: Export
 
     func requestExport() {
@@ -368,25 +491,31 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func confirmExport() {
-        guard let plan = pendingExport else { return }
+    /// `replace` overwrites files already on disk; otherwise new files get -2, -3… suffixes.
+    func confirmExport(replace: Bool = true) {
+        guard var plan = pendingExport else { return }
         pendingExport = nil
+        plan.export.overwriteExisting = replace
         startExport(plan)
     }
 
     func cancelExport() { exportTask?.cancel() }
 
     private func makePlan(images: [SourceImage], formats: [MatteFormat], root: URL) -> ExportPlan {
+        var options = exportOptions
+        options.outputDirectory = nil
+        options.overwriteExisting = true
+        let date = Date()
         var existing: [URL] = []
         let usesSubfolders = images.count * formats.count > 1
-        for image in images {
+        for (offset, image) in images.enumerated() {
             let directory = ExportPlan.directory(for: image, root: root, usesSubfolders: usesSubfolders)
             for format in formats {
-                let url = MatteRenderer.outputURL(sourceURL: image.url, format: format, type: exportType, outputDirectory: directory)
-                if FileManager.default.fileExists(atPath: url.path) { existing.append(url) }
+                guard let url = MatteRenderer.plannedURL(sourceURL: image.url, format: format, options: options, outputDirectory: directory, index: offset + 1, date: date) else { continue }
+                if FileManager.default.fileExists(atPath: url.path), !existing.contains(url) { existing.append(url) }
             }
         }
-        return ExportPlan(images: images, formats: formats, options: renderOptions, type: exportType, quality: jpegQuality, root: root, existing: existing)
+        return ExportPlan(images: images, formats: formats, render: renderOptions, export: options, root: root, date: date, existing: existing)
     }
 
     private func startExport(_ plan: ExportPlan) {
@@ -413,15 +542,19 @@ final class AppModel: ObservableObject {
             }
             var message = outcome.cancelled ? "Cancelled after \(outcome.written) file\(outcome.written == 1 ? "" : "s")" : "Exported \(outcome.written) file\(outcome.written == 1 ? "" : "s")"
             if let first = outcome.failures.first { message += " · \(outcome.failures.count) failed: \(first)" }
+            if let first = outcome.warnings.first { message += " · \(outcome.warnings.count) warning\(outcome.warnings.count == 1 ? "" : "s"): \(first)" }
             self.toast = message
         }
     }
 
-    /// Renders and writes every image × format pair. Decoding and encoding run in detached tasks; only bookkeeping touches the main actor.
+    /// Renders and writes every image × format pair through `MatteRenderer.export`. Decoding and encoding run in detached tasks;
+    /// only bookkeeping touches the main actor. Names used in each folder are passed as `avoiding` so patterns without {format}
+    /// (or two sources with the same name) never overwrite a file written earlier in the batch.
     private func perform(_ plan: ExportPlan, progress: (Int) -> Void) async -> ExportOutcome {
         var outcome = ExportOutcome()
         var done = 0
-        for image in plan.images {
+        var usedNames: [URL: Set<String>] = [:]
+        for (offset, image) in plan.images.enumerated() {
             if Task.isCancelled { outcome.cancelled = true; break }
             let sourceURL = image.url
             let decoded = await Task.detached(priority: .userInitiated) { () -> SendableImage? in
@@ -433,25 +566,29 @@ final class AppModel: ObservableObject {
                 progress(done)
                 continue
             }
-            let options = plan.options.resolved(for: image)
+            let render = plan.render.resolved(for: image)
+            let options = plan.export
             let directory = plan.directory(for: image)
+            let index = offset + 1, date = plan.date
             for format in plan.formats {
                 if Task.isCancelled { outcome.cancelled = true; break }
-                let type = plan.type, quality = plan.quality
+                let avoiding = usedNames[directory] ?? []
                 let result = await Task.detached(priority: .userInitiated) { () -> FileResult in
                     do {
-                        let file = try MatteRenderer.export(image: full.cgImage, sourceURL: sourceURL, format: format, options: options, type: type, quality: quality, outputDirectory: directory)
-                        return FileResult(file: file, failure: nil)
+                        let written = try MatteRenderer.export(image: full.cgImage, format: format, options: options, renderOptions: render, sourceURL: sourceURL, outputDirectory: directory, index: index, date: date, avoiding: avoiding)
+                        return FileResult(file: written.url, failure: nil, warnings: written.warnings.map { "\(written.url.lastPathComponent): \($0.description)" })
                     } catch {
                         return FileResult(file: nil, failure: error.localizedDescription)
                     }
                 }.value
+                outcome.warnings += result.warnings
                 if let failure = result.failure {
                     outcome.failures.append(failure)
-                } else {
+                } else if let file = result.file {
                     outcome.written += 1
                     outcome.lastFolder = directory
-                    outcome.lastFile = result.file
+                    outcome.lastFile = file
+                    usedNames[directory, default: []].insert(file.lastPathComponent)
                 }
                 done += 1
                 progress(done)
@@ -484,7 +621,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var watchStatus: (text: String, kind: BadgeKind) {
+    var watchStatus: (text: String, tone: Tone) {
         guard let folder = watchedFolder else { return ("No folder chosen", .neutral) }
         guard watching else { return ("Off", .neutral) }
         guard watcher != nil else { return ("Cannot watch \(folder.lastPathComponent)", .danger) }
@@ -536,7 +673,7 @@ final class AppModel: ObservableObject {
     // MARK: Launch environment (dev/docs hooks)
 
     /// MATTE_OPEN=a.png:b.png preload · MATTE_SELECT=all|0,2 · MATTE_FORMATS=id,id · MATTE_FORMAT=id (inspected format) ·
-    /// MATTE_TAB=formats|simulate · MATTE_COLORPANEL=1 · MATTE_SETTINGS=1 (see ContentView) ·
+    /// MATTE_TAB=formats|simulate · MATTE_COLORPANEL=1 · MATTE_SETTINGS=1 (see ContentView) · MATTE_EXPORTOPTIONS=1 (expanded, set in init) ·
     /// MATTE_SNAPSHOT=out.png (+ MATTE_SNAPSHOT_SIZE=1280x820) writes the window after 3s and quits.
     private func applyLaunchEnvironment(_ env: [String: String]) {
         if let formats = env["MATTE_FORMATS"] {
