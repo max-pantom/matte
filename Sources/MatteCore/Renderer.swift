@@ -22,14 +22,54 @@ public enum ExportType: String, Codable, Sendable, CaseIterable {
 }
 
 public enum MatteRenderer {
+    /// Decodes the full-resolution image, applying any EXIF orientation.
     public static func loadImage(at url: URL) throws -> CGImage {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: true] as CFDictionary) else { throw MatteError.cannotRead(url) }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { throw MatteError.cannotRead(url) }
+        if orientation(of: source) != 1, let size = rawPixelSize(of: source) {
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: Int(max(size.width, size.height)),
+            ]
+            if let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) { return image }
+        }
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: true] as CFDictionary) else { throw MatteError.cannotRead(url) }
+        return image
+    }
+
+    /// Decodes a downscaled copy whose longest side is at most `maxPixelSize`, applying EXIF orientation. Used for on-screen previews.
+    public static func loadImage(at url: URL, maxPixelSize: Int) throws -> CGImage {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { throw MatteError.cannotRead(url) }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize),
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw MatteError.cannotRead(url) }
         return image
     }
 
     public static func imageSize(at url: URL) throws -> CGSize {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any], let width = props[kCGImagePropertyPixelWidth] as? NSNumber, let height = props[kCGImagePropertyPixelHeight] as? NSNumber else { throw MatteError.cannotRead(url) }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let size = rawPixelSize(of: source) else { throw MatteError.cannotRead(url) }
+        return size
+    }
+
+    /// Pixel size as displayed, i.e. with width and height swapped for rotated EXIF orientations (5–8).
+    public static func orientedImageSize(at url: URL) throws -> CGSize {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let size = rawPixelSize(of: source) else { throw MatteError.cannotRead(url) }
+        return orientation(of: source) >= 5 ? CGSize(width: size.height, height: size.width) : size
+    }
+
+    private static func rawPixelSize(of source: CGImageSource) -> CGSize? {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any], let width = props[kCGImagePropertyPixelWidth] as? NSNumber, let height = props[kCGImagePropertyPixelHeight] as? NSNumber else { return nil }
         return CGSize(width: width.doubleValue, height: height.doubleValue)
+    }
+
+    private static func orientation(of source: CGImageSource) -> Int {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any], let value = props[kCGImagePropertyOrientation] as? NSNumber else { return 1 }
+        return value.intValue
     }
 
     public static func render(image: CGImage, format: MatteFormat, options: RenderOptions, previewMaxDimension: Int? = nil) throws -> CGImage {
@@ -89,14 +129,19 @@ public enum MatteRenderer {
         return FrameColor(red: Double(winning.r) / Double(winning.count * 255), green: Double(winning.g) / Double(winning.count * 255), blue: Double(winning.b) / Double(winning.count * 255))
     }
 
-    public static func export(image: CGImage, sourceURL: URL, format: MatteFormat, options: RenderOptions, type: ExportType, outputDirectory: URL) throws -> URL {
+    /// Where `export` writes a given source/format pair.
+    public static func outputURL(sourceURL: URL, format: MatteFormat, type: ExportType, outputDirectory: URL) -> URL {
+        let base = sourceURL.deletingPathExtension().lastPathComponent
+        return outputDirectory.appendingPathComponent("\(base)__\(format.id)_\(format.width)x\(format.height).\(type.fileExtension)")
+    }
+
+    public static func export(image: CGImage, sourceURL: URL, format: MatteFormat, options: RenderOptions, type: ExportType, quality: Double = 0.92, outputDirectory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let rendered = try render(image: image, format: format, options: options)
-        let base = sourceURL.deletingPathExtension().lastPathComponent
-        let url = outputDirectory.appendingPathComponent("\(base)__\(format.id)_\(format.width)x\(format.height).\(type.fileExtension)")
+        let url = outputURL(sourceURL: sourceURL, format: format, type: type, outputDirectory: outputDirectory)
         let uti = type == .png ? UTType.png.identifier : UTType.jpeg.identifier
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, uti as CFString, 1, nil) else { throw MatteError.cannotCreateDestination(url) }
-        let properties: CFDictionary = type == .jpeg ? [kCGImageDestinationLossyCompressionQuality: 0.92] as CFDictionary : [:] as CFDictionary
+        let properties: CFDictionary = type == .jpeg ? [kCGImageDestinationLossyCompressionQuality: min(1, max(0.1, quality))] as CFDictionary : [:] as CFDictionary
         CGImageDestinationAddImage(destination, rendered, properties)
         guard CGImageDestinationFinalize(destination) else { throw MatteError.cannotWrite(url) }
         let actual = try imageSize(at: url)

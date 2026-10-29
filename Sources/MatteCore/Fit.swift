@@ -20,7 +20,7 @@ public struct FitAnalysis: Sendable {
     public let isUpscaled: Bool
 }
 
-public struct FrameColor: Codable, Equatable, Sendable {
+public struct FrameColor: Codable, Hashable, Sendable {
     public var red: Double
     public var green: Double
     public var blue: Double
@@ -48,6 +48,17 @@ public struct FrameColor: Codable, Equatable, Sendable {
     public var hex: String {
         String(format: "#%02X%02X%02X", Int((red * 255).rounded()), Int((green * 255).rounded()), Int((blue * 255).rounded()))
     }
+
+    /// Strict #RRGGBB (or RRGGBB) parser for user-typed values.
+    public static func parseHex6(_ text: String) -> FrameColor? {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("#") { value.removeFirst() }
+        guard value.count == 6, value.allSatisfy(\.isHexDigit) else { return nil }
+        return FrameColor(hex: value)
+    }
+
+    /// Relative luminance (sRGB approximation), used to pick a legible checkmark colour.
+    public var luminance: Double { 0.2126 * red + 0.7152 * green + 0.0722 * blue }
 }
 
 public struct RenderOptions: Sendable {
@@ -62,6 +73,11 @@ public struct RenderOptions: Sendable {
     public init(mode: RenderMode = .fit, padding: Double = 0.06, alwaysPadPerfect: Bool = false, color: FrameColor = .white, autoMatch: Bool = false, focalPoint: CGPoint = CGPoint(x: 0.5, y: 0.5), cornerRadius: Double = 0) {
         self.mode = mode; self.padding = min(0.3, max(0, padding)); self.alwaysPadPerfect = alwaysPadPerfect
         self.color = color; self.autoMatch = autoMatch; self.focalPoint = focalPoint; self.cornerRadius = cornerRadius
+    }
+
+    /// Stable string identifying every option that affects rendered pixels, for preview caches.
+    public var cacheKey: String {
+        "\(mode.rawValue)|\(Int((padding * 1000).rounded()))|\(alwaysPadPerfect)|\(color.hex)|\(autoMatch)|\(Int((focalPoint.x * 1000).rounded())),\(Int((focalPoint.y * 1000).rounded()))|\(cornerRadius)"
     }
 }
 

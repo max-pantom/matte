@@ -12,10 +12,56 @@ struct CLIOptions {
     var autoMatch = false
     var type = ExportType.png
     var list = false
+    var simulate = false
 }
 
 func usage() {
     print("matte-cli <images...> [--out DIR] [--formats all|id,id] [--pad 0.06] [--mode fit|fill] [--color #RRGGBB|auto] [--jpeg] [--always-pad]")
+    print("matte-cli --simulate <images...>   print how X and Instagram crop these images when posted together, in order")
+    print("matte-cli --list                    list format ids")
+}
+
+func padded(_ text: String, _ width: Int) -> String {
+    text.count >= width ? text + " " : text + String(repeating: " ", count: width - text.count)
+}
+
+func describe(ratio: Double, loss: Double) -> String {
+    let percent = Int((loss * 100).rounded())
+    return String(format: "%.3f ", ratio) + (percent == 0 ? "full" : "crop \(percent)%")
+}
+
+func simulate(paths: [String]) throws {
+    let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    var names: [String] = []
+    var ratios: [Double] = []
+    for path in paths {
+        let url = URL(fileURLWithPath: path, relativeTo: cwd).standardizedFileURL
+        let size = try MatteRenderer.orientedImageSize(at: url)
+        names.append("\(url.lastPathComponent) \(Int(size.width))x\(Int(size.height))")
+        ratios.append(size.width / size.height)
+    }
+    let rows = Simulator.simulate(ratios: ratios)
+    let posts = XCarousel.posts(rows)
+    print("Simulating \(rows.count) image\(rows.count == 1 ? "" : "s") in order. X: \(posts.count) post\(posts.count == 1 ? "" : "s") (max \(XCarousel.maxImagesPerPost) per post); tiles 3:4...20:17 in multi-image posts, 3:4...2:1 alone.")
+    print("Instagram carousel: every slide uses the first image's ratio clamped to 4:5...1.91:1; profile grid tiles are 3:4.")
+    let nameWidth = max(24, (names.map(\.count).max() ?? 0) + 2)
+    let header: [String] = [padded("image", nameWidth), padded("ratio", 8), padded("X post", 6), padded("X carousel", 18), padded("X single", 18), padded("IG carousel", 18), "IG grid 3:4"]
+    print(header.joined())
+    for (postIndex, post) in posts.enumerated() {
+        for row in post {
+            let columns: [String] = [
+                padded(names[row.index], nameWidth),
+                padded(String(format: "%.3f", row.sourceRatio), 8),
+                padded(String(postIndex + 1), 6),
+                padded(describe(ratio: row.xCarouselRatio, loss: row.xCarouselLoss), 18),
+                padded(describe(ratio: row.xSingleRatio, loss: row.xSingleLoss), 18),
+                padded(describe(ratio: row.igCarouselRatio, loss: row.igCarouselLoss), 18),
+                describe(ratio: row.igGridRatio, loss: row.igGridLoss),
+            ]
+            print(columns.joined())
+        }
+    }
+    if rows.count > IGCarousel.maxSlides { print("Note: Instagram carousels hold \(IGCarousel.maxSlides) slides; images \(IGCarousel.maxSlides + 1)+ need another post.") }
 }
 
 func parse(_ arguments: [String]) throws -> CLIOptions {
@@ -30,6 +76,7 @@ func parse(_ arguments: [String]) throws -> CLIOptions {
         switch argument {
         case "--help", "-h": usage(); exit(0)
         case "--list": options.list = true
+        case "--simulate": options.simulate = true
         case "--always-pad": options.alwaysPad = true
         case "--out": options.output = try nextValue()
         case "--formats":
@@ -62,6 +109,10 @@ do {
         exit(0)
     }
     guard !options.images.isEmpty else { usage(); exit(2) }
+    if options.simulate {
+        try simulate(paths: options.images)
+        exit(0)
+    }
     let selected: [MatteFormat]
     if let ids = options.formatIDs {
         let known = Dictionary(uniqueKeysWithValues: MatteFormat.all.map { ($0.id, $0) })
